@@ -49,10 +49,10 @@ class RosAriaNode
     void spin();
     void publish();
     void sonarConnectCb();
-    void dynamic_reconfigureCB(rosaria::RosAriaConfig &config, uint32_t level);
+  void dynamic_reconfigureCB(rosaria::RosAriaConfig &config, uint32_t level);
     void readParameters();
 
-  protected:
+protected:
     ros::NodeHandle n;
     ros::Publisher pose_pub;
     ros::Publisher bumpers_pub;
@@ -126,6 +126,8 @@ void RosAriaNode::readParameters()
   // Robot Parameters  
   robot->lock();
   ros::NodeHandle n_("~");
+
+  // Set TicksMM parameter : odometry calibration parameter 
   if (n_.hasParam("TicksMM"))
   {
     n_.getParam( "TicksMM", TicksMM);
@@ -139,6 +141,7 @@ void RosAriaNode::readParameters()
     ROS_INFO("Setting TicksMM from robot controller stored configuration: %d", TicksMM);
   }
   
+  // Set DriftFactor parameter : odometry calibration parameter
   if (n_.hasParam("DriftFactor"))
   {
     n_.getParam( "DriftFactor", DriftFactor);
@@ -152,6 +155,7 @@ void RosAriaNode::readParameters()
     ROS_INFO("Setting DriftFactor from robot controller stored configuration: %d", DriftFactor);
   }
   
+  // Set RevCount parameter : odometry calibration parameter
   if (n_.hasParam("RevCount"))
   {
     n_.getParam( "RevCount", RevCount);
