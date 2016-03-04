@@ -56,7 +56,8 @@ protected:
     ros::NodeHandle n;
     ros::Publisher pose_pub;
     ros::Publisher bumpers_pub;
-    ros::Publisher sonar_pub;
+    ros::Publisher sonar_pub;  
+    ros::Publisher sonar_pub2;
     ros::Publisher sonar_pointcloud2_pub;
     ros::Publisher voltage_pub;
 
@@ -105,6 +106,7 @@ protected:
 
     // enable and publish sonar topics. set to true when first subscriber connects, set to false when last subscriber disconnects. 
     bool publish_sonar; 
+    bool publish_sonar2; 
     bool publish_sonar_pointcloud2;
 
     // Debug Aria
@@ -248,17 +250,19 @@ void RosAriaNode::dynamic_reconfigureCB(rosaria::RosAriaConfig &config, uint32_t
   robot->unlock();
 }
 
+// Enable and disable sonars if nobody is subscribed
 void RosAriaNode::sonarConnectCb()
 {
   publish_sonar = (sonar_pub.getNumSubscribers() > 0);
+  publish_sonar2 = (sonar_pub2.getNumSubscribers() > 0);
   publish_sonar_pointcloud2 = (sonar_pointcloud2_pub.getNumSubscribers() > 0);
   robot->lock();
-  if (publish_sonar || publish_sonar_pointcloud2)
+  if (publish_sonar || publish_sonar2 || publish_sonar_pointcloud2)
   {
     robot->enableSonar();
     sonar_enabled = false;
   }
-  else if(!publish_sonar && !publish_sonar_pointcloud2)
+  else if(!publish_sonar && !publish_sonar2 && !publish_sonar_pointcloud2)
   {
     robot->disableSonar();
     sonar_enabled = true;
@@ -266,6 +270,7 @@ void RosAriaNode::sonarConnectCb()
   robot->unlock();
 }
 
+// Constructor RosAriaNode
 RosAriaNode::RosAriaNode(ros::NodeHandle nh) : 
   n(nh),
   serial_port(""), serial_baud(0), 
@@ -315,6 +320,9 @@ RosAriaNode::RosAriaNode(ros::NodeHandle nh) :
   pose_pub = n.advertise<nav_msgs::Odometry>("pose",1000);
   bumpers_pub = n.advertise<rosaria::BumperState>("bumper_state",1000);
   sonar_pub = n.advertise<sensor_msgs::PointCloud>("sonar", 50, 
+      boost::bind(&RosAriaNode::sonarConnectCb, this),
+      boost::bind(&RosAriaNode::sonarConnectCb, this));
+  sonar_pub2 = n.advertise<sensor_msgs::PointCloud>("sonar2", 50, 
       boost::bind(&RosAriaNode::sonarConnectCb, this),
       boost::bind(&RosAriaNode::sonarConnectCb, this));
   sonar_pointcloud2_pub = n.advertise<sensor_msgs::PointCloud2>("sonar_pointcloud2", 50,
@@ -545,15 +553,15 @@ void RosAriaNode::publish()
   position.header.stamp = ros::Time::now();
   pose_pub.publish(position);
 
-  ROS_DEBUG("RosAria: publish: (time %f) pose x: %f, y: %f, angle: %f; linear vel x: %f, y: %f; angular vel z: %f", 
-    position.header.stamp.toSec(), 
-    (double)position.pose.pose.position.x,
-    (double)position.pose.pose.position.y,
-    (double)position.pose.pose.orientation.w,
-    (double) position.twist.twist.linear.x,
-    (double) position.twist.twist.linear.y,
-    (double) position.twist.twist.angular.z
-  );
+  // ROS_DEBUG("RosAria: publish: (time %f) pose x: %f, y: %f, angle: %f; linear vel x: %f, y: %f; angular vel z: %f", 
+  //   position.header.stamp.toSec(), 
+  //   (double)position.pose.pose.position.x,
+  //   (double)position.pose.pose.position.y,
+  //   (double)position.pose.pose.orientation.w,
+  //   (double) position.twist.twist.linear.x,
+  //   (double) position.twist.twist.linear.y,
+  //   (double) position.twist.twist.angular.z
+  //);
 
 
   // publishing transform odom->base_link
@@ -583,7 +591,7 @@ void RosAriaNode::publish()
     bumpers.front_bumpers[i] = (front_bumpers & (1 << (i+1))) == 0 ? 0 : 1;
     bumper_info << " " << (front_bumpers & (1 << (i+1)));
   }
-  ROS_DEBUG("RosAria: Front bumpers:%s", bumper_info.str().c_str());
+  //ROS_DEBUG("RosAria: Front bumpers:%s", bumper_info.str().c_str());
 
   bumper_info.str("");
   // Rear bumpers have reverse order (rightmost is LSB)
@@ -593,7 +601,7 @@ void RosAriaNode::publish()
     bumpers.rear_bumpers[i] = (rear_bumpers & (1 << (numRearBumpers-i))) == 0 ? 0 : 1;
     bumper_info << " " << (rear_bumpers & (1 << (numRearBumpers-i)));
   }
-  ROS_DEBUG("RosAria: Rear bumpers:%s", bumper_info.str().c_str());
+  //ROS_DEBUG("RosAria: Rear bumpers:%s", bumper_info.str().c_str());
   
   bumpers_pub.publish(bumpers);
 
@@ -650,18 +658,18 @@ void RosAriaNode::publish()
       }
     
       // getRange() will return an integer between 0 and 5000 (5m)
-      sonar_debug_info << reading->getRange() << " ";
+      // sonar_debug_info << reading->getRange() << " ";
 
       // local (x,y). Appears to be from the centre of the robot, since values may
       // exceed 5000. This is good, since it means we only need 1 transform.
       // x & y seem to be swapped though, i.e. if the robot is driving north
       // x is north/south and y is east/west.
       //
-      //ArPose sensor = reading->getSensorPosition();  //position of sensor.
+      // ArPose sensor = reading->getSensorPosition();  //position of sensor.
       // sonar_debug_info << "(" << reading->getLocalX() 
       //                  << ", " << reading->getLocalY()
       //                  << ") from (" << sensor.getX() << ", " 
-      //                  << sensor.getY() << ") ;; " ;
+      //	       << sensor.getY() << ") ;; " ;
     
       //add sonar readings (robot-local coordinate frame) to cloud
       geometry_msgs::Point32 p;
@@ -684,6 +692,19 @@ void RosAriaNode::publish()
       else
       {
         sonar_pointcloud2_pub.publish(cloud2);
+      }
+    }
+
+    if(publish_sonar2)
+    {
+      sensor_msgs::PointCloud cloud3 = cloud;	//sonar readings.
+      if(&cloud3 == NULL)
+      {
+        ROS_WARN("Error copying sonar point cloud! Not publishing this time.");
+      }
+      else
+      {
+      sonar_pub2.publish(cloud3);
       }
     }
 
