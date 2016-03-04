@@ -28,6 +28,8 @@
 
 #include <sstream>
 
+// Number of samples for each sonar scan
+#define SONAR_SAMPLES 100
 
 // Node that interfaces between ROS and mobile robot base features via ARIA library. 
 //
@@ -54,8 +56,7 @@ protected:
     ros::NodeHandle n;
     ros::Publisher pose_pub;
     ros::Publisher bumpers_pub;
-    ros::Publisher sonar_pub;  
-    ros::Publisher sonar_pub2;
+    ros::Publisher sonar_pub[SONAR_SAMPLES];  
     ros::Publisher voltage_pub;
 
     ros::Publisher recharge_state_pub;
@@ -102,12 +103,10 @@ protected:
     bool sonar_enabled; 
 
     // Stock data of sonars through time
-    sensor_msgs::PointCloud cloud;
-    sensor_msgs::PointCloud cloud2;
+    sensor_msgs::PointCloud cloud[SONAR_SAMPLES];
 
     // enable and publish sonar topics. set to true when first subscriber connects, set to false when last subscriber disconnects. 
-    bool publish_sonar; 
-    bool publish_sonar2; 
+    bool publish_sonar;  
 
     // Variable to switch from a sonar to another to store data
     int sonar_number;
@@ -256,15 +255,14 @@ void RosAriaNode::dynamic_reconfigureCB(rosaria::RosAriaConfig &config, uint32_t
 // Enable and disable sonars if nobody is subscribed
 void RosAriaNode::sonarConnectCb()
 {
-  publish_sonar = (sonar_pub.getNumSubscribers() > 0);
-  publish_sonar2 = (sonar_pub2.getNumSubscribers() > 0);
+  publish_sonar = (sonar_pub[0].getNumSubscribers() > 0);
   robot->lock();
-  if (publish_sonar || publish_sonar2)
+  if (publish_sonar)
   {
     robot->enableSonar();
     sonar_enabled = false;
   }
-  else if(!publish_sonar && !publish_sonar2)
+  else if(!publish_sonar)
   {
     robot->disableSonar();
     sonar_enabled = true;
@@ -278,7 +276,7 @@ RosAriaNode::RosAriaNode(ros::NodeHandle nh) :
   serial_port(""), serial_baud(0), 
   conn(NULL), laserConnector(NULL), robot(NULL),
   myPublishCB(this, &RosAriaNode::publish),
-  sonar_enabled(false), publish_sonar(false), publish_sonar2(false),
+  sonar_enabled(false), publish_sonar(false),
   debug_aria(false), 
   TicksMM(-1), DriftFactor(-1), RevCount(-1),
   publish_aria_lasers(false)
@@ -321,12 +319,17 @@ RosAriaNode::RosAriaNode(ros::NodeHandle nh) :
   // See ros::NodeHandle API docs.
   pose_pub = n.advertise<nav_msgs::Odometry>("pose",1000);
   bumpers_pub = n.advertise<rosaria::BumperState>("bumper_state",1000);
-  sonar_pub = n.advertise<sensor_msgs::PointCloud>("sonar", 50, 
+  for (int i = 0; i < SONAR_SAMPLES; i++)
+  {
+    // Creating name of topic
+    std::stringstream sstm;
+    sstm << "sonar" << i;
+    std::string result = sstm.str();
+
+    sonar_pub[i] = n.advertise<sensor_msgs::PointCloud>(result, 50, 
       boost::bind(&RosAriaNode::sonarConnectCb, this),
       boost::bind(&RosAriaNode::sonarConnectCb, this));
-  sonar_pub2 = n.advertise<sensor_msgs::PointCloud>("sonar2", 50, 
-      boost::bind(&RosAriaNode::sonarConnectCb, this),
-      boost::bind(&RosAriaNode::sonarConnectCb, this));
+  }
 
   voltage_pub = n.advertise<std_msgs::Float64>("battery_voltage", 1000);
   recharge_state_pub = n.advertise<std_msgs::Int8>("battery_recharge_state", 5, true /*latch*/ );
@@ -637,20 +640,23 @@ void RosAriaNode::publish()
   }
 
   // Publish sonar information, if enabled.
-  if (publish_sonar || publish_sonar2)
+  if (publish_sonar)
   {
-    // Delete data of cloud2
-    memset (&(cloud2.points), 0, sizeof (cloud2.points));
+    for (int i = SONAR_SAMPLES-1; i !=0; i--) 
+    {
+      // Delete data of the cloud
+      memset (&(cloud[i].points), 0, sizeof (cloud[i].points));
 
-    // Copy last cloud in the new one
-    cloud2 = cloud;
+      // Copy the previous cloud in this one
+      cloud[i] = cloud[i-1];
+    }
 
-    // Delete data of cloud
-    memset (&(cloud.points), 0, sizeof (cloud.points));
+    // Delete data of first cloud
+    memset (&(cloud[0].points), 0, sizeof (cloud[0].points));
 
-    cloud.header.stamp = position.header.stamp;	//copy time.
+    cloud[0].header.stamp = position.header.stamp;	//copy time.
     // sonar sensors relative to base_link
-    cloud.header.frame_id = frame_id_sonar;
+    cloud[0].header.frame_id = frame_id_sonar;
   
 
     std::stringstream sonar_debug_info; // Log debugging info
@@ -683,27 +689,16 @@ void RosAriaNode::publish()
       p.x = reading->getLocalX() / 1000.0;
       p.y = reading->getLocalY() / 1000.0;
       p.z = 0.0;
-      cloud.points.push_back(p);
+      cloud[0].points.push_back(p);
     }
     ROS_DEBUG_STREAM(sonar_debug_info.str());
     
     // publish topic(s)
-
-    if(publish_sonar2)
-    {
-      if(&cloud2 == NULL)
-      {
-        ROS_WARN("Error copying sonar point cloud! Not publishing this time.");
-      }
-      else
-      {
-	sonar_pub2.publish(cloud2);
-      }
-    }
-
     if(publish_sonar)
     {
-      sonar_pub.publish(cloud);
+      // Loop to publish everything
+      for (int i = 0; i < SONAR_SAMPLES; i++) 
+	sonar_pub[i].publish(cloud[i]);
     }
   } // end if sonar_enabled
 }
