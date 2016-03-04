@@ -10,8 +10,6 @@
 #include "geometry_msgs/Pose.h"
 #include "geometry_msgs/PoseStamped.h"
 #include <sensor_msgs/PointCloud.h>  //for sonar data
-#include <sensor_msgs/PointCloud2.h>
-#include <sensor_msgs/point_cloud_conversion.h> // can optionally publish sonar as new type pointcloud2
 #include "nav_msgs/Odometry.h"
 #include "rosaria/BumperState.h"
 #include "tf/tf.h"
@@ -58,7 +56,6 @@ protected:
     ros::Publisher bumpers_pub;
     ros::Publisher sonar_pub;  
     ros::Publisher sonar_pub2;
-    ros::Publisher sonar_pointcloud2_pub;
     ros::Publisher voltage_pub;
 
     ros::Publisher recharge_state_pub;
@@ -104,10 +101,16 @@ protected:
     // flag indicating whether sonar was enabled or disabled on the robot
     bool sonar_enabled; 
 
+    // Stock data of sonars through time
+    sensor_msgs::PointCloud cloud;
+    sensor_msgs::PointCloud cloud2;
+
     // enable and publish sonar topics. set to true when first subscriber connects, set to false when last subscriber disconnects. 
     bool publish_sonar; 
     bool publish_sonar2; 
-    bool publish_sonar_pointcloud2;
+
+    // Variable to switch from a sonar to another to store data
+    int sonar_number;
 
     // Debug Aria
     bool debug_aria;
@@ -255,14 +258,13 @@ void RosAriaNode::sonarConnectCb()
 {
   publish_sonar = (sonar_pub.getNumSubscribers() > 0);
   publish_sonar2 = (sonar_pub2.getNumSubscribers() > 0);
-  publish_sonar_pointcloud2 = (sonar_pointcloud2_pub.getNumSubscribers() > 0);
   robot->lock();
-  if (publish_sonar || publish_sonar2 || publish_sonar_pointcloud2)
+  if (publish_sonar || publish_sonar2)
   {
     robot->enableSonar();
     sonar_enabled = false;
   }
-  else if(!publish_sonar && !publish_sonar2 && !publish_sonar_pointcloud2)
+  else if(!publish_sonar && !publish_sonar2)
   {
     robot->disableSonar();
     sonar_enabled = true;
@@ -276,7 +278,7 @@ RosAriaNode::RosAriaNode(ros::NodeHandle nh) :
   serial_port(""), serial_baud(0), 
   conn(NULL), laserConnector(NULL), robot(NULL),
   myPublishCB(this, &RosAriaNode::publish),
-  sonar_enabled(false), publish_sonar(false), publish_sonar_pointcloud2(false),
+  sonar_enabled(false), publish_sonar(false), publish_sonar2(false),
   debug_aria(false), 
   TicksMM(-1), DriftFactor(-1), RevCount(-1),
   publish_aria_lasers(false)
@@ -323,9 +325,6 @@ RosAriaNode::RosAriaNode(ros::NodeHandle nh) :
       boost::bind(&RosAriaNode::sonarConnectCb, this),
       boost::bind(&RosAriaNode::sonarConnectCb, this));
   sonar_pub2 = n.advertise<sensor_msgs::PointCloud>("sonar2", 50, 
-      boost::bind(&RosAriaNode::sonarConnectCb, this),
-      boost::bind(&RosAriaNode::sonarConnectCb, this));
-  sonar_pointcloud2_pub = n.advertise<sensor_msgs::PointCloud2>("sonar_pointcloud2", 50,
       boost::bind(&RosAriaNode::sonarConnectCb, this),
       boost::bind(&RosAriaNode::sonarConnectCb, this));
 
@@ -638,16 +637,24 @@ void RosAriaNode::publish()
   }
 
   // Publish sonar information, if enabled.
-  if (publish_sonar || publish_sonar_pointcloud2)
+  if (publish_sonar || publish_sonar2)
   {
-    sensor_msgs::PointCloud cloud;	//sonar readings.
+    // Delete data of cloud2
+    memset (&(cloud2.points), 0, sizeof (cloud2.points));
+
+    // Copy last cloud in the new one
+    cloud2 = cloud;
+
+    // Delete data of cloud
+    memset (&(cloud.points), 0, sizeof (cloud.points));
+
     cloud.header.stamp = position.header.stamp;	//copy time.
     // sonar sensors relative to base_link
     cloud.header.frame_id = frame_id_sonar;
   
 
     std::stringstream sonar_debug_info; // Log debugging info
-    sonar_debug_info << "Sonar readings: ";
+    //sonar_debug_info << "Sonar readings: ";
 
     for (int i = 0; i < robot->getNumSonar(); i++) {
       ArSensorReading* reading = NULL;
@@ -682,29 +689,15 @@ void RosAriaNode::publish()
     
     // publish topic(s)
 
-    if(publish_sonar_pointcloud2)
-    {
-      sensor_msgs::PointCloud2 cloud2;
-      if(!sensor_msgs::convertPointCloudToPointCloud2(cloud, cloud2))
-      {
-        ROS_WARN("Error converting sonar point cloud message to point_cloud2 type before publishing! Not publishing this time.");
-      }
-      else
-      {
-        sonar_pointcloud2_pub.publish(cloud2);
-      }
-    }
-
     if(publish_sonar2)
     {
-      sensor_msgs::PointCloud cloud3 = cloud;	//sonar readings.
-      if(&cloud3 == NULL)
+      if(&cloud2 == NULL)
       {
         ROS_WARN("Error copying sonar point cloud! Not publishing this time.");
       }
       else
       {
-      sonar_pub2.publish(cloud3);
+	sonar_pub2.publish(cloud2);
       }
     }
 
