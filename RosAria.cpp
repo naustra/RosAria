@@ -11,7 +11,6 @@
 #include "geometry_msgs/PoseStamped.h"
 #include <sensor_msgs/PointCloud.h>  //for sonar data
 #include "nav_msgs/Odometry.h"
-#include "rosaria/BumperState.h"
 #include "tf/tf.h"
 #include "tf/transform_listener.h"  //for tf::getPrefixParam
 #include <tf/transform_broadcaster.h>
@@ -55,14 +54,7 @@ class RosAriaNode
 protected:
     ros::NodeHandle n;
     ros::Publisher pose_pub;
-    ros::Publisher bumpers_pub;
     ros::Publisher sonar_pub[SONAR_SAMPLES];  
-    ros::Publisher voltage_pub;
-
-    ros::Publisher recharge_state_pub;
-    std_msgs::Int8 recharge_state;
-
-    ros::Publisher state_of_charge_pub;
 
     ros::Publisher motors_state_pub;
     std_msgs::Bool motors_state;
@@ -84,7 +76,6 @@ protected:
     ArLaserConnector *laserConnector;
     ArRobot *robot;
     nav_msgs::Odometry position;
-    rosaria::BumperState bumpers;
     ArPose pos;
     ArFunctorC<RosAriaNode> myPublishCB;
     //ArRobot::ChargeState batteryCharge;
@@ -96,7 +87,6 @@ protected:
     std::string tf_prefix;
     std::string frame_id_odom;
     std::string frame_id_base_link;
-    std::string frame_id_bumper;
     std::string frame_id_sonar;
 
     // flag indicating whether sonar was enabled or disabled on the robot
@@ -309,7 +299,6 @@ RosAriaNode::RosAriaNode(ros::NodeHandle nh) :
   tf_prefix = tf::getPrefixParam(n);
   frame_id_odom = tf::resolve(tf_prefix, "odom");
   frame_id_base_link = tf::resolve(tf_prefix, "base_link");
-  frame_id_bumper = tf::resolve(tf_prefix, "bumpers_frame");
   frame_id_sonar = tf::resolve(tf_prefix, "sonar_frame");
 
   // advertise services for data topics
@@ -318,7 +307,6 @@ RosAriaNode::RosAriaNode(ros::NodeHandle nh) :
   // subscribers when they subscribe).
   // See ros::NodeHandle API docs.
   pose_pub = n.advertise<nav_msgs::Odometry>("pose",1000);
-  bumpers_pub = n.advertise<rosaria::BumperState>("bumper_state",1000);
   for (int i = 0; i < SONAR_SAMPLES; i++)
   {
     // Creating name of topic
@@ -330,11 +318,6 @@ RosAriaNode::RosAriaNode(ros::NodeHandle nh) :
       boost::bind(&RosAriaNode::sonarConnectCb, this),
       boost::bind(&RosAriaNode::sonarConnectCb, this));
   }
-
-  voltage_pub = n.advertise<std_msgs::Float64>("battery_voltage", 1000);
-  recharge_state_pub = n.advertise<std_msgs::Int8>("battery_recharge_state", 5, true /*latch*/ );
-  recharge_state.data = -2;
-  state_of_charge_pub = n.advertise<std_msgs::Float32>("battery_state_of_charge", 100);
 
   motors_state_pub = n.advertise<std_msgs::Bool>("motors_state", 5, true /*latch*/ );
   motors_state.data = false;
@@ -441,9 +424,9 @@ int RosAriaNode::Setup()
   dynConf_min.rot_decel = robot->getAbsoluteMaxRotDecel() * M_PI/180;
   
   // I'm setting these upper bounds relitivly arbitrarily, feel free to increase them.
-  dynConf_min.TicksMM     = 10;
-  dynConf_min.DriftFactor = -200;
-  dynConf_min.RevCount    = -32760;
+  dynConf_min.TicksMM     = 0;
+  dynConf_min.DriftFactor = 0;
+  dynConf_min.RevCount    = 0;
   
   dynamic_reconfigure_server->setConfigMin(dynConf_min);
   
@@ -459,9 +442,9 @@ int RosAriaNode::Setup()
   dynConf_max.rot_decel = robot->getAbsoluteMaxRotDecel() * M_PI/180;
   
   // I'm setting these upper bounds relitivly arbitrarily, feel free to increase them.
-  dynConf_max.TicksMM     = 200;
-  dynConf_max.DriftFactor = 200;
-  dynConf_max.RevCount    = 32760;
+  dynConf_max.TicksMM     = 20000;
+  dynConf_max.DriftFactor = 20000;
+  dynConf_max.RevCount    = 1000000;
   
   dynamic_reconfigure_server->setConfigMax(dynConf_max);
   
@@ -491,10 +474,6 @@ int RosAriaNode::Setup()
 
   // callback will  be called by ArRobot background processing thread for every SIP data packet received from robot
   robot->addSensorInterpTask("ROSPublishingTask", 100, &myPublishCB);
-
-  // Initialize bumpers with robot number of bumpers
-  bumpers.front_bumpers.resize(robot->getNumFrontBumpers());
-  bumpers.rear_bumpers.resize(robot->getNumRearBumpers());
 
   // Run ArRobot background processing thread
   robot->runAsync(true);
@@ -577,57 +556,6 @@ void RosAriaNode::publish()
   odom_trans.transform.rotation = tf::createQuaternionMsgFromYaw(pos.getTh()*M_PI/180);
   
   odom_broadcaster.sendTransform(odom_trans);
-  
-  // getStallValue returns 2 bytes with stall bit and bumper bits, packed as (00 00 FrontBumpers RearBumpers)
-  int stall = robot->getStallValue();
-  unsigned char front_bumpers = (unsigned char)(stall >> 8);
-  unsigned char rear_bumpers = (unsigned char)(stall);
-
-  bumpers.header.frame_id = frame_id_bumper;
-  bumpers.header.stamp = ros::Time::now();
-
-  std::stringstream bumper_info(std::stringstream::out);
-  // Bit 0 is for stall, next bits are for bumpers (leftmost is LSB)
-  for (unsigned int i=0; i<robot->getNumFrontBumpers(); i++)
-  {
-    bumpers.front_bumpers[i] = (front_bumpers & (1 << (i+1))) == 0 ? 0 : 1;
-    bumper_info << " " << (front_bumpers & (1 << (i+1)));
-  }
-  //ROS_DEBUG("RosAria: Front bumpers:%s", bumper_info.str().c_str());
-
-  bumper_info.str("");
-  // Rear bumpers have reverse order (rightmost is LSB)
-  unsigned int numRearBumpers = robot->getNumRearBumpers();
-  for (unsigned int i=0; i<numRearBumpers; i++)
-  {
-    bumpers.rear_bumpers[i] = (rear_bumpers & (1 << (numRearBumpers-i))) == 0 ? 0 : 1;
-    bumper_info << " " << (rear_bumpers & (1 << (numRearBumpers-i)));
-  }
-  //ROS_DEBUG("RosAria: Rear bumpers:%s", bumper_info.str().c_str());
-  
-  bumpers_pub.publish(bumpers);
-
-  //Publish battery information
-  // TODO: Decide if BatteryVoltageNow (normalized to (0,12)V)  is a better option
-  std_msgs::Float64 batteryVoltage;
-  batteryVoltage.data = robot->getRealBatteryVoltageNow();
-  voltage_pub.publish(batteryVoltage);
-
-  if(robot->haveStateOfCharge())
-  {
-    std_msgs::Float32 soc;
-    soc.data = robot->getStateOfCharge()/100.0;
-    state_of_charge_pub.publish(soc);
-  }
-
-  // publish recharge state if changed
-  char s = robot->getChargeState();
-  if(s != recharge_state.data)
-  {
-    ROS_INFO("RosAria: publishing new recharge state %d.", s);
-    recharge_state.data = s;
-    recharge_state_pub.publish(recharge_state);
-  }
 
   // publish motors state if changed
   bool e = robot->areMotorsEnabled();
