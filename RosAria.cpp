@@ -30,6 +30,9 @@
 // Number of samples for each sonar scan
 #define SONAR_SAMPLES 100
 
+// Acquisition time of the sonars
+#define ACQUISITION_TIME 0.04
+
 // Node that interfaces between ROS and mobile robot base features via ARIA library. 
 //
 // RosAria uses the roscpp client library, see http://www.ros.org/wiki/roscpp for
@@ -48,7 +51,7 @@ class RosAriaNode
     void spin();
     void publish();
     void sonarConnectCb();
-  void dynamic_reconfigureCB(rosaria::RosAriaConfig &config, uint32_t level);
+    void dynamic_reconfigureCB(rosaria::RosAriaConfig &config, uint32_t level);
     void readParameters();
 
 protected:
@@ -510,6 +513,19 @@ int RosAriaNode::Setup()
   cmdvel_sub = n.subscribe( "cmd_vel", 1, (boost::function <void(const geometry_msgs::TwistConstPtr&)>)
       boost::bind(&RosAriaNode::cmdvel_cb, this, _1 ));
 
+  // Initialising point clouds
+  for (int i = SONAR_SAMPLES-1; i >= 0; i--) {
+    sensor_msgs::ChannelFloat32 intensity;
+    intensity.name = "intensity";
+    
+    for (int j = 0; j < robot->getNumSonar(); j++) {
+      float test;
+      test = 100 - i;
+      intensity.values.push_back(test);
+    }
+    cloud[i].channels.push_back(intensity);
+  }
+
   ROS_INFO_NAMED("rosaria", "rosaria: Setup complete");
   return 0;
 }
@@ -521,7 +537,7 @@ void RosAriaNode::spin()
 
 void RosAriaNode::publish()
 {
-  // Note, this is called via SensorInterpTask callback (myPublishCB, named "ROSPublishingTask"). ArRobot object 'robot' sholud not be locked or unlocked.
+  // Note, this is called via SensorInterpTask callback (myPublishCB, named "ROSPublishingTask"). ArRobot object 'robot' should not be locked or unlocked.
   pos = robot->getPose();
   tf::poseTFToMsg(tf::Transform(tf::createQuaternionFromYaw(pos.getTh()*M_PI/180), tf::Vector3(pos.getX()/1000,
     pos.getY()/1000, 0)), position.pose.pose); //Aria returns pose in mm.
@@ -575,8 +591,22 @@ void RosAriaNode::publish()
       // Delete data of the cloud
       memset (&(cloud[i].points), 0, sizeof (cloud[i].points));
 
-      // Copy the previous cloud in this one
-      cloud[i] = cloud[i-1];
+      // Calculates the derivation of each points with the velocity
+      if (!(cloud[i-1].points.empty())) {
+
+	// Copy header
+	cloud[i].header = cloud[i-1].header;
+
+	for (int j = 0; j < robot->getNumSonar(); j++) {
+	  //add sonar readings (robot-local coordinate frame) to cloud
+	  geometry_msgs::Point32 p;
+	  p.x = cloud[i-1].points[j].x - ( position.twist.twist.linear.x - position.twist.twist.angular.z 
+					   * cloud[i-1].points[j].y) * ACQUISITION_TIME;
+	  p.y = cloud[i-1].points[j].y - ( position.twist.twist.angular.z * cloud[i-1].points[j].x) * ACQUISITION_TIME;
+	  p.z = 0.0;
+	  cloud[i].points.push_back(p);
+	}
+      }
     }
 
     // Delete data of first cloud
