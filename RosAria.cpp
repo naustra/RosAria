@@ -57,7 +57,7 @@ class RosAriaNode
 protected:
     ros::NodeHandle n;
     ros::Publisher pose_pub;
-    ros::Publisher sonar_pub[SONAR_SAMPLES];  
+    ros::Publisher sonar_pub;  
 
     ros::Publisher motors_state_pub;
     std_msgs::Bool motors_state;
@@ -96,7 +96,7 @@ protected:
     bool sonar_enabled; 
 
     // Stock data of sonars through time
-    sensor_msgs::PointCloud cloud[SONAR_SAMPLES];
+    sensor_msgs::PointCloud cloud;
 
     // enable and publish sonar topics. set to true when first subscriber connects, set to false when last subscriber disconnects. 
     bool publish_sonar;  
@@ -248,7 +248,7 @@ void RosAriaNode::dynamic_reconfigureCB(rosaria::RosAriaConfig &config, uint32_t
 // Enable and disable sonars if nobody is subscribed
 void RosAriaNode::sonarConnectCb()
 {
-  publish_sonar = (sonar_pub[0].getNumSubscribers() > 0);
+  publish_sonar = (sonar_pub.getNumSubscribers() > 0);
   robot->lock();
   if (publish_sonar)
   {
@@ -310,17 +310,9 @@ RosAriaNode::RosAriaNode(ros::NodeHandle nh) :
   // subscribers when they subscribe).
   // See ros::NodeHandle API docs.
   pose_pub = n.advertise<nav_msgs::Odometry>("pose",1000);
-  for (int i = 0; i < SONAR_SAMPLES; i++)
-  {
-    // Creating name of topic
-    std::stringstream sstm;
-    sstm << "sonar" << i;
-    std::string result = sstm.str();
-
-    sonar_pub[i] = n.advertise<sensor_msgs::PointCloud>(result, 50, 
-      boost::bind(&RosAriaNode::sonarConnectCb, this),
-      boost::bind(&RosAriaNode::sonarConnectCb, this));
-  }
+  sonar_pub = n.advertise<sensor_msgs::PointCloud>("sonar", 50, 
+						   boost::bind(&RosAriaNode::sonarConnectCb, this),
+						   boost::bind(&RosAriaNode::sonarConnectCb, this));
 
   motors_state_pub = n.advertise<std_msgs::Bool>("motors_state", 5, true /*latch*/ );
   motors_state.data = false;
@@ -513,18 +505,20 @@ int RosAriaNode::Setup()
   cmdvel_sub = n.subscribe( "cmd_vel", 1, (boost::function <void(const geometry_msgs::TwistConstPtr&)>)
       boost::bind(&RosAriaNode::cmdvel_cb, this, _1 ));
 
-  // Initialising point clouds
-  for (int i = SONAR_SAMPLES-1; i >= 0; i--) {
-    sensor_msgs::ChannelFloat32 intensity;
-    intensity.name = "intensity";
-    
+  // Number of sonars
+  int num_sonars = robot->getNumSonar();
+
+  // Initializing point cloud
+  sensor_msgs::ChannelFloat32 intensity;
+  intensity.name = "intensity";
+  for (int i = 0; i < SONAR_SAMPLES; i++) {
     for (int j = 0; j < robot->getNumSonar(); j++) {
       float test;
-      test = 100 - i;
+      test = 100-i;
       intensity.values.push_back(test);
     }
-    cloud[i].channels.push_back(intensity);
   }
+  cloud.channels.push_back(intensity);
 
   ROS_INFO_NAMED("rosaria", "rosaria: Setup complete");
   return 0;
@@ -586,37 +580,35 @@ void RosAriaNode::publish()
   // Publish sonar information, if enabled.
   if (publish_sonar)
   {
-    for (int i = SONAR_SAMPLES-1; i !=0; i--) 
+    // Get num sonars
+    int num_sonars = robot->getNumSonar();
+
+    // If more there are SONAR_SAMPLES samples, we delete the last one
+    if (cloud.points.size() == SONAR_SAMPLES*num_sonars)
+      cloud.points.resize((SONAR_SAMPLES-1)*num_sonars);
+
+    // Create a new vector to calculate position
+    std::vector<geometry_msgs::Point32> new_position;
+
+    for (int i = 0; i < cloud.points.size(); i++) 
     {
-      // Delete data of the cloud
-      memset (&(cloud[i].points), 0, sizeof (cloud[i].points));
-
       // Calculates the derivation of each points with the velocity
-      if (!(cloud[i-1].points.empty())) {
-
-	// Copy header
-	cloud[i].header = cloud[i-1].header;
-
-	for (int j = 0; j < robot->getNumSonar(); j++) {
-	  //add sonar readings (robot-local coordinate frame) to cloud
-	  geometry_msgs::Point32 p;
-	  p.x = cloud[i-1].points[j].x - ( position.twist.twist.linear.x - position.twist.twist.angular.z 
-					   * cloud[i-1].points[j].y) * ACQUISITION_TIME;
-	  p.y = cloud[i-1].points[j].y - ( position.twist.twist.angular.z * cloud[i-1].points[j].x) * ACQUISITION_TIME;
-	  p.z = 0.0;
-	  cloud[i].points.push_back(p);
-	}
-      }
+      //add sonar readings (robot-local coordinate frame) to clouid
+      geometry_msgs::Point32 p;
+      p.x = cloud.points[i].x - ( position.twist.twist.linear.x - position.twist.twist.angular.z * cloud.points[i].y) * ACQUISITION_TIME;
+      p.y = cloud.points[i].y - ( position.twist.twist.angular.z * cloud.points[i].x) * ACQUISITION_TIME;
+      p.z = 0.0;
+      new_position.push_back(p);
     }
 
-    // Delete data of first cloud
-    memset (&(cloud[0].points), 0, sizeof (cloud[0].points));
+    // Assign new vector
+    cloud.points = new_position;
 
-    cloud[0].header.stamp = position.header.stamp;	//copy time.
+    //copy time.
+    cloud.header.stamp = position.header.stamp;	
     // sonar sensors relative to base_link
-    cloud[0].header.frame_id = frame_id_sonar;
+    cloud.header.frame_id = frame_id_sonar;
   
-
     std::stringstream sonar_debug_info; // Log debugging info
     //sonar_debug_info << "Sonar readings: ";
 
@@ -647,16 +639,14 @@ void RosAriaNode::publish()
       p.x = reading->getLocalX() / 1000.0;
       p.y = reading->getLocalY() / 1000.0;
       p.z = 0.0;
-      cloud[0].points.push_back(p);
+      cloud.points.insert (cloud.points.begin(),1,p);
     }
     ROS_DEBUG_STREAM(sonar_debug_info.str());
     
     // publish topic(s)
     if(publish_sonar)
     {
-      // Loop to publish everything
-      for (int i = 0; i < SONAR_SAMPLES; i++) 
-	sonar_pub[i].publish(cloud[i]);
+      sonar_pub.publish(cloud);
     }
   } // end if sonar_enabled
 }
