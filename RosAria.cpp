@@ -72,6 +72,9 @@ protected:
 
     ros::Time veltime;
 
+    ros::Time t;
+    ros::Duration dt;
+
     std::string serial_port;
     int serial_baud;
 
@@ -485,7 +488,7 @@ int RosAriaNode::Setup()
 
     robot->lock();
     const std::map<int, ArLaser*> *lasers = robot->getLaserMap();
-    ROS_INFO_NAMED("rosaria", "rosaria: there are %lu connected lasers", lasers->size());
+    ROS_INFO_NAMED("rosaria", "rosaria: there are %lu connected lasers", (long unsigned int)lasers->size());
     for(std::map<int, ArLaser*>::const_iterator i = lasers->begin(); i != lasers->end(); ++i)
     {
       ArLaser *l = i->second;
@@ -507,6 +510,11 @@ int RosAriaNode::Setup()
 
   // Number of sonars
   int num_sonars = robot->getNumSonar();
+
+  // Put sonar_cycle to 40 ms (25 Hz)
+  robot->comInt(48, 40);
+
+  t = ros::Time::now();
 
   // Initializing point cloud
   sensor_msgs::ChannelFloat32 intensity;
@@ -580,6 +588,9 @@ void RosAriaNode::publish()
   // Publish sonar information, if enabled.
   if (publish_sonar)
   {
+    dt = ros::Time::now() - t;
+    t = ros::Time::now();
+
     // Get num sonars
     int num_sonars = robot->getNumSonar();
 
@@ -595,8 +606,8 @@ void RosAriaNode::publish()
       // Calculates the derivation of each points with the velocity
       //add sonar readings (robot-local coordinate frame) to clouid
       geometry_msgs::Point32 p;
-      p.x = cloud.points[i].x - ( position.twist.twist.linear.x - position.twist.twist.angular.z * cloud.points[i].y) * ACQUISITION_TIME;
-      p.y = cloud.points[i].y - ( position.twist.twist.angular.z * cloud.points[i].x) * ACQUISITION_TIME;
+      p.x = cloud.points[i].x - ( position.twist.twist.linear.x - position.twist.twist.angular.z * cloud.points[i].y) * dt.toSec();
+      p.y = cloud.points[i].y - ( position.twist.twist.angular.z * cloud.points[i].x) * dt.toSec();
       p.z = 0.0;
       new_position.push_back(p);
     }
