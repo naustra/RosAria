@@ -27,12 +27,6 @@
 
 #include <sstream>
 
-// Number of samples for each sonar scan
-#define SONAR_SAMPLES 100
-
-// Acquisition time of the sonars
-#define ACQUISITION_TIME 0.04
-
 // Node that interfaces between ROS and mobile robot base features via ARIA library. 
 //
 // RosAria uses the roscpp client library, see http://www.ros.org/wiki/roscpp for
@@ -106,6 +100,9 @@ protected:
 
     // Variable to switch from a sonar to another to store data
     int sonar_number;
+ 
+    // Number of samples for each sonar scan
+    int sonar_samples; 
 
     // Debug Aria
     bool debug_aria;
@@ -516,10 +513,13 @@ int RosAriaNode::Setup()
 
   t = ros::Time::now();
 
+  // Initializing sonar_samples : the last X data we keep from the sonar
+  sonar_samples = 100;
+
   // Initializing point cloud
   sensor_msgs::ChannelFloat32 intensity;
   intensity.name = "intensity";
-  for (int i = 0; i < SONAR_SAMPLES; i++) {
+  for (int i = 0; i < sonar_samples; i++) {
     for (int j = 0; j < robot->getNumSonar(); j++) {
       float test;
       test = 100-i;
@@ -594,9 +594,9 @@ void RosAriaNode::publish()
     // Get num sonars
     int num_sonars = robot->getNumSonar();
 
-    // If more there are SONAR_SAMPLES samples, we delete the last one
-    if (cloud.points.size() == SONAR_SAMPLES*num_sonars)
-      cloud.points.resize((SONAR_SAMPLES-1)*num_sonars);
+    // If more there are sonar_samples samples, we delete the last one
+    if (cloud.points.size() == sonar_samples*num_sonars)
+      cloud.points.resize((sonar_samples-1)*num_sonars);
 
     // Create a new vector to calculate position
     std::vector<geometry_msgs::Point32> new_position;

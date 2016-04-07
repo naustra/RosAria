@@ -1,0 +1,25 @@
+<launch>
+	<!-- This assumes roscore is running on this machine -->
+	<env name="ROS_MASTER_URI" value="http://$(env ROS_IP):11311"/>
+
+	%% Define Raspberry machine
+	<machine name="Raspberry" address="192.168.1.23" user="ubuntu" password="ubuntu" env-loader="/opt/ros/jade/env_rasp.sh" default="never" /> 
+
+	%% Nodes on Raspberry
+	<!-- Start sonar and robot communication -->
+	<node name="RosAria" pkg="mon_package" type="mon_package" machine="Raspberry" args="_port:=/dev/ttyUSB0" required="true" />
+
+	<!-- Start laser communication -->
+	<node name="launching_laser" pkg="sicktoolbox_wrapper" type="sicklms" machine="Raspberry" args="_port:=/dev/ttyUSB1" required="true" />
+
+	%% Set host default machine to launch nodes
+	<machine name="host" address="localhost" default="true" />
+
+	%% Nodes on my host machine 
+	<!-- Static transforms -->
+	<node name="base_to_sonar_broadcaster" pkg="tf" type="static_transform_publisher" args="0 0 0 0 0 0 /base_link /sonar_frame 100"/>
+	<node name="base_to_laser_broadcaster" pkg="tf" type="static_transform_publisher" args="0.216 -0.008 0 0 0 0 /base_link /laser 100"/>
+
+	<!-- Rviz -->
+
+</launch>
